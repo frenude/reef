@@ -1,0 +1,8 @@
+{
+  "id": "lobster-lobby",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "lobster-lobby",
+  "version": "0.4.0",
+  "description": "🦞 Lobster Lobby — Inter-instance communication for OpenClaw & Claude Code",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./relay": "./dist/relay-server.js",
+    "./client": "./dist/relay-client.js"
+  },
+  "bin": {
+    "lobster-relay": "./dist/relay-server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "relay": "tsx src/relay-server.ts",
+    "dev": "tsx --watch src/relay-server.ts",
+    "test": "tsx src/test.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.12",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "openclaw": {
+    "extensions": ["./src/openclaw-plugin.ts"]
+  }
+}
