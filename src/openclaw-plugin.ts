@@ -15,20 +15,33 @@ export default function register(api: any) {
       return;
     }
     try {
-      // Find the owner's feishu DM session key from the plugin config
+      // Load reef config for delivery settings
       const fullCfg = runtime?.config?.loadConfig?.() || {};
       const reefCfg = fullCfg?.plugins?.entries?.["reef-relay"]?.config
                     || fullCfg?.plugins?.entries?.["reef"]?.config
                     || {};
       const ownerOpenId = reefCfg.ownerOpenId || "";
+      const deliverTo = reefCfg.deliverTo || "owner"; // "owner" | "group"
+      const deliverGroupId = reefCfg.deliverGroupId || "";
+      const lobsterMap = reefCfg.lobsterFeishuMap || {};
 
-      // Build session key: agent:main:feishu:direct:<ownerOpenId>
-      const sessionKey = ownerOpenId
-        ? `agent:main:feishu:direct:${ownerOpenId}`
-        : "agent:main:main";
+      // Determine session key based on delivery target
+      let sessionKey: string;
+      if (deliverTo === "group" && deliverGroupId) {
+        sessionKey = `agent:main:feishu:group:${deliverGroupId}`;
+      } else if (ownerOpenId) {
+        sessionKey = `agent:main:feishu:direct:${ownerOpenId}`;
+      } else {
+        sessionKey = "agent:main:main";
+      }
 
+      // Build message with @ mention if we know their feishu id
+      const senderInfo = lobsterMap[from];
+      const mention = senderInfo?.openId
+        ? `<at user_id="${senderInfo.openId}">${senderInfo.name || fromName}</at> `
+        : "";
       const prefix = type === "dm" ? `🪸 [Reef DM from ${fromName}]` : `🪸 [Reef lobby — ${fromName}]`;
-      const message = `${prefix}\n${text}`;
+      const message = `${prefix}\n${mention}${text}`;
 
       const { runId } = await runtime.subagent.run({
         sessionKey,
