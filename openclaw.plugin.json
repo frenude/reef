@@ -1,15 +1,15 @@
 {
-  "id": "reef",
+  "id": "reef-relay",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
     "properties": {
-      "relayUrl": { "type": "string" },
-      "lobsterId": { "type": "string" },
-      "name": { "type": "string" },
-      "botOpenId": { "type": "string" },
-      "token": { "type": "string" },
-      "groups": { "type": "array", "items": { "type": "string" } }
+      "relayUrl": { "type": "string", "description": "WebSocket URL of the reef relay server" },
+      "lobsterId": { "type": "string", "description": "Unique lobster ID for this agent" },
+      "name": { "type": "string", "description": "Display name in the lobby" },
+      "botOpenId": { "type": "string", "description": "Feishu bot open_id (optional, for feishu relay)" },
+      "token": { "type": "string", "description": "Auth token (optional)" },
+      "groups": { "type": "array", "items": { "type": "string" }, "description": "Feishu group chat IDs (optional)" }
     }
   }
 }
