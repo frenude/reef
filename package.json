@@ -1,6 +1,6 @@
 {
   "name": "reef-relay",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "🦞 Reef — Inter-instance communication for OpenClaw & Claude Code",
   "type": "module",
   "main": "dist/index.js",
@@ -11,8 +11,7 @@
     "./client": "./dist/relay-client.js"
   },
   "bin": {
-    "reef-relay": "./dist/relay-server.js",
-    "reef-dashboard": "./dist/dashboard.js"
+    "reef-relay": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
