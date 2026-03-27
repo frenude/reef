@@ -5,48 +5,25 @@ export default function register(api: any) {
   const runtime = api.runtime;
   let relayClient: RelayClient | null = null;
   let onlineLobsters: Array<{ id: string; name: string }> = [];
+  let pluginCfg: any = {};
 
   log.info("🪸 Reef plugin registered");
 
-  // Helper: forward a reef message to feishu group using sendMessage API
-  async function forwardToFeishuGroup(from: string, fromName: string, text: string, type: "lobby" | "dm") {
+  // Helper: send a message to feishu group via API
+  async function sendToFeishuGroup(text: string) {
     try {
       const fullCfg = runtime?.config?.loadConfig?.() || {};
       const reefCfg = fullCfg?.plugins?.entries?.["reef-relay"]?.config
                     || fullCfg?.plugins?.entries?.["reef"]?.config
                     || {};
       const deliverGroupId = reefCfg.deliverGroupId || "";
-      const lobsterMap = reefCfg.lobsterFeishuMap || {};
+      if (!deliverGroupId) return;
 
-      if (!deliverGroupId) {
-        log.info("🪸 No deliverGroupId configured, skipping feishu forward");
-        return;
-      }
-
-      // Build message with @ mention
-      const senderInfo = lobsterMap[from];
-      const mention = senderInfo?.openId
-        ? `<at user_id="${senderInfo.openId}">${senderInfo.name || fromName}</at> `
-        : "";
-      const prefix = type === "dm" ? `🪸 [Reef DM]` : `🪸 [Reef]`;
-      const message = `${prefix} ${fromName} 说：\n${text}`;
-
-      // Use the feishu channel to send
       const feishuCfg = fullCfg?.channels?.feishu;
-      if (!feishuCfg) {
-        log.warn("🪸 No feishu channel configured");
-        return;
-      }
+      const appId = feishuCfg?.appId;
+      const appSecret = feishuCfg?.appSecret;
+      if (!appId || !appSecret) return;
 
-      // Get tenant access token and send via API
-      const appId = feishuCfg.appId;
-      const appSecret = feishuCfg.appSecret;
-      if (!appId || !appSecret) {
-        log.warn("🪸 No feishu appId/appSecret");
-        return;
-      }
-
-      // Get token
       const tokenRes = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -54,32 +31,56 @@ export default function register(api: any) {
       });
       const tokenData = await tokenRes.json() as any;
       const token = tokenData.tenant_access_token;
-      if (!token) {
-        log.error("🪸 Failed to get feishu token");
-        return;
-      }
+      if (!token) return;
 
-      // Send message to group
       const sendRes = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id`, {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           receive_id: deliverGroupId,
           msg_type: "text",
-          content: JSON.stringify({ text: message }),
+          content: JSON.stringify({ text }),
         }),
       });
       const sendData = await sendRes.json() as any;
       if (sendData.code === 0) {
-        log.info(`🪸 Forwarded ${type} from ${fromName} to group ${deliverGroupId}`);
+        log.info(`🪸 Sent to group ${deliverGroupId}`);
       } else {
         log.error(`🪸 Feishu send failed: ${sendData.code} ${sendData.msg}`);
       }
     } catch (err: any) {
-      log.error(`🪸 Forward to feishu failed: ${err.message}`);
+      log.error(`🪸 Send to feishu failed: ${err.message}`);
+    }
+  }
+
+  // Helper: inject DM into agent session so agent can respond
+  async function injectToAgent(from: string, fromName: string, text: string) {
+    if (!runtime?.subagent?.run) {
+      log.warn("🪸 Cannot inject: no runtime.subagent.run");
+      return;
+    }
+    try {
+      const fullCfg = runtime?.config?.loadConfig?.() || {};
+      const reefCfg = fullCfg?.plugins?.entries?.["reef-relay"]?.config
+                    || fullCfg?.plugins?.entries?.["reef"]?.config
+                    || {};
+      const ownerOpenId = reefCfg.ownerOpenId || "";
+      // Inject into owner's DM session so the agent wakes up and can use lobby tool to reply
+      const sessionKey = ownerOpenId
+        ? `agent:main:feishu:direct:${ownerOpenId}`
+        : "agent:main:main";
+
+      const message = `🪸 [Reef DM from ${fromName}]\n${text}\n\n(用 lobby tool 的 dm action 回复 ${from})`;
+
+      const { runId } = await runtime.subagent.run({
+        sessionKey,
+        message,
+        deliver: true,
+        idempotencyKey: `reef-${from}-${Date.now()}`,
+      });
+      log.info(`🪸 Injected DM from ${fromName} → ${sessionKey}, runId=${runId}`);
+    } catch (err: any) {
+      log.error(`🪸 Inject failed: ${err.message}`);
     }
   }
 
@@ -87,9 +88,9 @@ export default function register(api: any) {
     id: "reef-relay",
     start: async (startArg: any) => {
       const fullConfig = startArg?.config || {};
-      const pluginCfg = fullConfig?.plugins?.entries?.["reef-relay"]?.config
-                      || fullConfig?.plugins?.entries?.["reef"]?.config
-                      || {};
+      pluginCfg = fullConfig?.plugins?.entries?.["reef-relay"]?.config
+                || fullConfig?.plugins?.entries?.["reef"]?.config
+                || {};
 
       const relayUrl = pluginCfg.relayUrl || process.env.REEF_RELAY_URL || "";
       const lobsterId = pluginCfg.lobsterId || process.env.REEF_ID || "";
@@ -117,9 +118,9 @@ export default function register(api: any) {
           },
           onDirectMessage(msg) {
             log.info(`🪸 [DM] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
+            // When we RECEIVE a DM, forward it to our owner's agent session
             if (autoReply && msg.from !== lobsterId) {
-              // Forward DM to feishu group so the agent sees it and can respond
-              forwardToFeishuGroup(msg.from, msg.fromName, msg.text, "dm").catch(() => {});
+              injectToAgent(msg.from, msg.fromName, msg.text).catch(() => {});
             }
           },
           onFeishuRelay(msg) { log.info(`🪸 [feishu] ${msg.fromName}: ${msg.text.slice(0, 80)}`); },
@@ -165,6 +166,9 @@ export default function register(api: any) {
         return result({ ok: false, error: "Not connected to reef relay" });
       }
 
+      const lobsterMap = pluginCfg.lobsterFeishuMap || {};
+      const deliverGroupId = pluginCfg.deliverGroupId || "";
+
       switch (params.action) {
         case "who":
           client.requestWho();
@@ -177,12 +181,25 @@ export default function register(api: any) {
         case "say":
           if (!params.text?.trim()) return result({ ok: false, error: "text is required" });
           client.sendLobby(params.text);
+          // Also mirror to feishu group if configured
+          if (deliverGroupId) {
+            sendToFeishuGroup(`🪸 ${pluginCfg.name || pluginCfg.lobsterId}: ${params.text}`).catch(() => {});
+          }
           return result({ ok: true, action: "lobby_broadcast", text: params.text });
 
-        case "dm":
+        case "dm": {
           if (!params.to || !params.text) return result({ ok: false, error: "to and text are required" });
           client.sendDm(params.to, params.text);
+          // Mirror outgoing DM to feishu group — I (sender) post it, @ the recipient
+          if (deliverGroupId) {
+            const targetInfo = lobsterMap[params.to];
+            const mention = targetInfo?.openId
+              ? `<at user_id="${targetInfo.openId}">${targetInfo.name || params.to}</at> `
+              : `@${params.to} `;
+            sendToFeishuGroup(`🪸 ${mention}${params.text}`).catch(() => {});
+          }
           return result({ ok: true, action: "dm_sent", to: params.to, text: params.text });
+        }
 
         case "status":
           return result({
