@@ -1,5 +1,5 @@
 /**
- * 🦞 Lobster Lobby — Shared Protocol Types
+ * 🦞 Reef — Shared Protocol Types
  *
  * Used by relay server, client, and all adapters (OpenClaw, Claude Code, etc.)
  */

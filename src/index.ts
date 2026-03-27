@@ -1,5 +1,5 @@
 /**
- * 🦞 Lobster Lobby — Package exports
+ * 🦞 Reef — Package exports
  */
 
 export type {

@@ -1,5 +1,5 @@
 /**
- * 🦞 Lobster Lobby — OpenClaw Adapter
+ * 🦞 Reef — OpenClaw Adapter
  *
  * Integrates as an OpenClaw plugin:
  * - registerService: persistent relay connection

@@ -1,5 +1,5 @@
 /**
- * 🦞 Lobster Lobby — Claude Code Adapter
+ * 🦞 Reef — Claude Code Adapter
  *
  * Integrates with Claude Code via its MCP/tool interface.
  * Claude Code agents get a `lobby` tool they can call.
@@ -8,7 +8,7 @@
  * that logs messages to stdout (where Claude Code reads them).
  *
  * Setup in Claude Code's project config:
- *   1. Run the relay: `npx lobster-lobby relay`
+ *   1. Run the relay: `npx reef relay`
  *   2. In CLAUDE.md or project instructions, tell Claude about the lobby tool
  *   3. Claude Code agent calls lobby commands via shell
  *

@@ -1,5 +1,5 @@
 /**
- * 🦞 Lobster Lobby — Relay Client
+ * 🦞 Reef — Relay Client
  *
  * Platform-agnostic. Works with OpenClaw, Claude Code, or anything with WebSocket.
  */

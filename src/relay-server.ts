@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 🦞 Lobster Lobby — Relay Server
+ * 🦞 Reef — Relay Server
  *
  * Run: npx tsx src/relay-server.ts
  * Or:  RELAY_TOKEN=secret node dist/relay-server.js
@@ -35,7 +35,7 @@ const lobbyHistory: ServerMessage[] = [];
 
 const wss = new WebSocketServer({ port: PORT });
 
-console.log(`🦞 Lobster Lobby — ws://0.0.0.0:${PORT}`);
+console.log(`🦞 Reef — ws://0.0.0.0:${PORT}`);
 if (RELAY_TOKEN) console.log(`   Auth: token required`);
 
 wss.on("connection", (ws: WebSocket) => {

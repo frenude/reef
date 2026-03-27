@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 🦞 Lobster Lobby — Integration Test
+ * 🦞 Reef — Integration Test
  *
  * Run: npx tsx src/test.ts
  *

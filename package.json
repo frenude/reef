@@ -1,7 +1,7 @@
 {
-  "name": "lobster-lobby",
+  "name": "reef",
   "version": "0.4.0",
-  "description": "🦞 Lobster Lobby — Inter-instance communication for OpenClaw & Claude Code",
+  "description": "🦞 Reef — Inter-instance communication for OpenClaw & Claude Code",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

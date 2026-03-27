@@ -1,5 +1,5 @@
 {
-  "id": "lobster-lobby",
+  "id": "reef",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
