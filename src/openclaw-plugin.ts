@@ -2,56 +2,84 @@ import { RelayClient } from "./relay-client.js";
 
 export default function register(api: any) {
   const log = api.logger || { info: console.log, warn: console.warn, error: console.error };
-  const runtime = api.runtime; // PluginRuntime — has subagent.run()
+  const runtime = api.runtime;
   let relayClient: RelayClient | null = null;
   let onlineLobsters: Array<{ id: string; name: string }> = [];
 
   log.info("🪸 Reef plugin registered");
 
-  // Helper: inject a reef message into the main agent session
-  async function injectToAgent(from: string, fromName: string, text: string, type: "lobby" | "dm") {
-    if (!runtime?.subagent?.run) {
-      log.warn("🪸 Cannot inject message: runtime.subagent.run not available");
-      return;
-    }
+  // Helper: forward a reef message to feishu group using sendMessage API
+  async function forwardToFeishuGroup(from: string, fromName: string, text: string, type: "lobby" | "dm") {
     try {
-      // Load reef config for delivery settings
       const fullCfg = runtime?.config?.loadConfig?.() || {};
       const reefCfg = fullCfg?.plugins?.entries?.["reef-relay"]?.config
                     || fullCfg?.plugins?.entries?.["reef"]?.config
                     || {};
-      const ownerOpenId = reefCfg.ownerOpenId || "";
-      const deliverTo = reefCfg.deliverTo || "owner"; // "owner" | "group"
       const deliverGroupId = reefCfg.deliverGroupId || "";
       const lobsterMap = reefCfg.lobsterFeishuMap || {};
 
-      // Determine session key based on delivery target
-      let sessionKey: string;
-      if (deliverTo === "group" && deliverGroupId) {
-        sessionKey = `agent:main:feishu:group:${deliverGroupId}`;
-      } else if (ownerOpenId) {
-        sessionKey = `agent:main:feishu:direct:${ownerOpenId}`;
-      } else {
-        sessionKey = "agent:main:main";
+      if (!deliverGroupId) {
+        log.info("🪸 No deliverGroupId configured, skipping feishu forward");
+        return;
       }
 
-      // Build message with @ mention if we know their feishu id
+      // Build message with @ mention
       const senderInfo = lobsterMap[from];
       const mention = senderInfo?.openId
         ? `<at user_id="${senderInfo.openId}">${senderInfo.name || fromName}</at> `
         : "";
-      const prefix = type === "dm" ? `🪸 [Reef DM from ${fromName}]` : `🪸 [Reef lobby — ${fromName}]`;
-      const message = `${prefix}\n${mention}${text}`;
+      const prefix = type === "dm" ? `🪸 [Reef DM]` : `🪸 [Reef]`;
+      const message = `${prefix} ${fromName} 说：\n${text}`;
 
-      const { runId } = await runtime.subagent.run({
-        sessionKey,
-        message,
-        deliver: true,
-        idempotencyKey: `reef-${type}-${from}-${Date.now()}`,
+      // Use the feishu channel to send
+      const feishuCfg = fullCfg?.channels?.feishu;
+      if (!feishuCfg) {
+        log.warn("🪸 No feishu channel configured");
+        return;
+      }
+
+      // Get tenant access token and send via API
+      const appId = feishuCfg.appId;
+      const appSecret = feishuCfg.appSecret;
+      if (!appId || !appSecret) {
+        log.warn("🪸 No feishu appId/appSecret");
+        return;
+      }
+
+      // Get token
+      const tokenRes = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
       });
-      log.info(`🪸 Injected ${type} from ${fromName} → session=${sessionKey}, runId=${runId}`);
+      const tokenData = await tokenRes.json() as any;
+      const token = tokenData.tenant_access_token;
+      if (!token) {
+        log.error("🪸 Failed to get feishu token");
+        return;
+      }
+
+      // Send message to group
+      const sendRes = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          receive_id: deliverGroupId,
+          msg_type: "text",
+          content: JSON.stringify({ text: message }),
+        }),
+      });
+      const sendData = await sendRes.json() as any;
+      if (sendData.code === 0) {
+        log.info(`🪸 Forwarded ${type} from ${fromName} to group ${deliverGroupId}`);
+      } else {
+        log.error(`🪸 Feishu send failed: ${sendData.code} ${sendData.msg}`);
+      }
     } catch (err: any) {
-      log.error(`🪸 Failed to inject message: ${err.message}`);
+      log.error(`🪸 Forward to feishu failed: ${err.message}`);
     }
   }
 
@@ -69,7 +97,7 @@ export default function register(api: any) {
       const botOpenId = pluginCfg.botOpenId || process.env.REEF_BOT_OPEN_ID || "";
       const token = pluginCfg.token || process.env.REEF_TOKEN || "";
       const groups = Array.isArray(pluginCfg.groups) ? pluginCfg.groups : [];
-      const autoReply = pluginCfg.autoReply !== false; // default true — inject DMs to agent
+      const autoReply = pluginCfg.autoReply !== false;
 
       log.info(`🪸 Reef config: relayUrl=${relayUrl}, lobsterId=${lobsterId}, name=${name}, autoReply=${autoReply}`);
 
@@ -86,13 +114,12 @@ export default function register(api: any) {
         adapter: {
           onLobbyMessage(msg) {
             log.info(`🪸 [lobby] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
-            // Don't auto-reply to lobby messages (too noisy)
           },
           onDirectMessage(msg) {
             log.info(`🪸 [DM] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
             if (autoReply && msg.from !== lobsterId) {
-              // Inject DM into agent session so agent can respond
-              injectToAgent(msg.from, msg.fromName, msg.text, "dm").catch(() => {});
+              // Forward DM to feishu group so the agent sees it and can respond
+              forwardToFeishuGroup(msg.from, msg.fromName, msg.text, "dm").catch(() => {});
             }
           },
           onFeishuRelay(msg) { log.info(`🪸 [feishu] ${msg.fromName}: ${msg.text.slice(0, 80)}`); },
