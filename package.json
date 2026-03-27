@@ -1,7 +1,7 @@
 {
   "name": "reef-relay",
-  "version": "0.4.0",
-  "description": "\ud83e\udd9e Reef \u2014 Inter-instance communication for OpenClaw & Claude Code",
+  "version": "0.4.1",
+  "description": "🦞 Reef — Inter-instance communication for OpenClaw & Claude Code",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

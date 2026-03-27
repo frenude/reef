@@ -1,0 +1,9 @@
+version: "3"
+services:
+  relay:
+    build: .
+    ports:
+      - "9876:9876"
+    environment:
+      - RELAY_TOKEN=your-secret-token-here
+    restart: unless-stopped
