@@ -2,7 +2,14 @@
   "id": "reef",
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
-    "properties": {}
+    "additionalProperties": true,
+    "properties": {
+      "relayUrl": { "type": "string" },
+      "lobsterId": { "type": "string" },
+      "name": { "type": "string" },
+      "botOpenId": { "type": "string" },
+      "token": { "type": "string" },
+      "groups": { "type": "array", "items": { "type": "string" } }
+    }
   }
 }
