@@ -126,6 +126,7 @@ function handleLobby(ws: WebSocket, msg: { text: string }, senderId: string | nu
   lobbyHistory.push(payload);
   if (lobbyHistory.length > MAX_HISTORY) lobbyHistory.shift();
 
+  console.log(`🦞 [lobby] ${sender.name}: ${text.slice(0, 120)}`);
   for (const [, info] of lobsters) send(info.ws, payload);
 }
 
@@ -140,6 +141,7 @@ function handleDm(ws: WebSocket, msg: { to: string; text: string }, senderId: st
   }
 
   const payload: ServerMessage = { type: "dm", from: senderId, fromName: sender.name, text: msg.text.trim(), ts: Date.now() };
+  console.log(`🦞 [DM] ${sender.name} → ${lobsters.get(targetId)!.name}: ${msg.text.trim().slice(0, 120)}`);
   send(lobsters.get(targetId)!.ws, payload);
   send(ws, { ...payload, echo: true });
 }
