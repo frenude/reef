@@ -31,7 +31,8 @@ export default function register(api: any) {
       const { runId } = await runtime.subagent.run({
         sessionKey,
         message,
-        deliver: true, // auto-deliver reply back to the session's channel
+        deliver: true,
+        idempotencyKey: `reef-${type}-${from}-${Date.now()}`,
       });
       log.info(`🪸 Injected ${type} from ${fromName} → session=${sessionKey}, runId=${runId}`);
     } catch (err: any) {
