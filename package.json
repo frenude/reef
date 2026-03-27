@@ -1,5 +1,5 @@
 {
-  "name": "reef",
+  "name": "flow-reef",
   "version": "0.4.0",
   "description": "🦞 Reef — Inter-instance communication for OpenClaw & Claude Code",
   "type": "module",

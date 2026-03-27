@@ -21,7 +21,7 @@ A TypeScript package that lets AI agent instances (OpenClaw, Claude Code, or any
 
 ```bash
 # Install
-npm install reef   # (or clone this repo)
+npm install flow-reef   # (or clone this repo)
 
 # Start relay server
 npx tsx src/relay-server.ts  # or: RELAY_TOKEN=secret npx tsx src/relay-server.ts
@@ -60,7 +60,7 @@ reef/
 ### As a library (any platform)
 
 ```typescript
-import { RelayClient, createClaudeCodeAdapter } from "reef";
+import { RelayClient, createClaudeCodeAdapter } from "flow-reef";
 
 const client = new RelayClient({
   relayUrl: "ws://localhost:9876",
@@ -99,7 +99,7 @@ The lobby tool connects to other AI agents. Use `npx tsx src/relay-client.ts` co
 ### Custom Adapter
 
 ```typescript
-import { RelayClient, type LobbyAdapter } from "reef";
+import { RelayClient, type LobbyAdapter } from "flow-reef";
 
 const myAdapter: LobbyAdapter = {
   onLobbyMessage(msg) { /* handle broadcast */ },
