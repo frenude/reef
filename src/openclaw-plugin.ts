@@ -2,10 +2,42 @@ import { RelayClient } from "./relay-client.js";
 
 export default function register(api: any) {
   const log = api.logger || { info: console.log, warn: console.warn, error: console.error };
+  const runtime = api.runtime; // PluginRuntime — has subagent.run()
   let relayClient: RelayClient | null = null;
   let onlineLobsters: Array<{ id: string; name: string }> = [];
 
   log.info("🪸 Reef plugin registered");
+
+  // Helper: inject a reef message into the main agent session
+  async function injectToAgent(from: string, fromName: string, text: string, type: "lobby" | "dm") {
+    if (!runtime?.subagent?.run) {
+      log.warn("🪸 Cannot inject message: runtime.subagent.run not available");
+      return;
+    }
+    try {
+      // Build session key for the main feishu DM session (owner talking to themselves)
+      const cfg = api.runtime?.config?.loadConfig?.() || {};
+      const feishuCfg = cfg?.channels?.feishu;
+      const ownerOpenId = Object.keys(feishuCfg?.accounts || {})[0]
+        ? undefined // multi-account not handled yet
+        : undefined;
+
+      // Use "main" agent session — the primary conversation session
+      const sessionKey = "main";
+
+      const prefix = type === "dm" ? `🪸 [Reef DM from ${fromName}]` : `🪸 [Reef lobby — ${fromName}]`;
+      const message = `${prefix}\n${text}`;
+
+      const { runId } = await runtime.subagent.run({
+        sessionKey,
+        message,
+        deliver: true, // auto-deliver reply back to the session's channel
+      });
+      log.info(`🪸 Injected ${type} from ${fromName} → session=${sessionKey}, runId=${runId}`);
+    } catch (err: any) {
+      log.error(`🪸 Failed to inject message: ${err.message}`);
+    }
+  }
 
   api.registerService?.({
     id: "reef-relay",
@@ -21,8 +53,9 @@ export default function register(api: any) {
       const botOpenId = pluginCfg.botOpenId || process.env.REEF_BOT_OPEN_ID || "";
       const token = pluginCfg.token || process.env.REEF_TOKEN || "";
       const groups = Array.isArray(pluginCfg.groups) ? pluginCfg.groups : [];
+      const autoReply = pluginCfg.autoReply !== false; // default true — inject DMs to agent
 
-      log.info(`🪸 Reef config: relayUrl=${relayUrl}, lobsterId=${lobsterId}, name=${name}`);
+      log.info(`🪸 Reef config: relayUrl=${relayUrl}, lobsterId=${lobsterId}, name=${name}, autoReply=${autoReply}`);
 
       if (!relayUrl || !lobsterId) {
         log.info("🪸 Reef disabled (missing relayUrl or lobsterId)");
@@ -35,8 +68,17 @@ export default function register(api: any) {
         token: token || undefined,
         groups,
         adapter: {
-          onLobbyMessage(msg) { log.info(`🪸 [lobby] ${msg.fromName}: ${msg.text.slice(0, 100)}`); },
-          onDirectMessage(msg) { log.info(`🪸 [DM] ${msg.fromName}: ${msg.text.slice(0, 100)}`); },
+          onLobbyMessage(msg) {
+            log.info(`🪸 [lobby] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
+            // Don't auto-reply to lobby messages (too noisy)
+          },
+          onDirectMessage(msg) {
+            log.info(`🪸 [DM] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
+            if (autoReply && msg.from !== lobsterId) {
+              // Inject DM into agent session so agent can respond
+              injectToAgent(msg.from, msg.fromName, msg.text, "dm").catch(() => {});
+            }
+          },
           onFeishuRelay(msg) { log.info(`🪸 [feishu] ${msg.fromName}: ${msg.text.slice(0, 80)}`); },
           onPresence(msg) { log.info(`🪸 ${msg.name} ${msg.type === "join" ? "joined" : "left"}`); },
           onHistory(messages) { log.info(`🪸 Got ${messages.length} history messages`); },
@@ -59,8 +101,6 @@ export default function register(api: any) {
     },
   });
 
-  // Register tool using the same pattern as feishu plugins:
-  // factory receives ctx, returns tool object with execute(_toolCallId, params)
   api.registerTool((ctx: any) => ({
     name: "lobby",
     label: "Reef Lobby",
@@ -85,7 +125,6 @@ export default function register(api: any) {
       switch (params.action) {
         case "who":
           client.requestWho();
-          // Give a moment for the response
           await new Promise(r => setTimeout(r, 500));
           return result({
             ok: true,
