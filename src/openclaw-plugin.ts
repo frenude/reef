@@ -10,10 +10,9 @@ export default function register(api: any) {
   api.registerService?.({
     id: "reef-relay",
     start: async (startArg: any) => {
-      // config is the FULL openclaw config — dig into plugins.entries for our config
       const fullConfig = startArg?.config || {};
-      const pluginCfg = fullConfig?.plugins?.entries?.["reef-relay"]?.config 
-                      || fullConfig?.plugins?.entries?.["reef"]?.config 
+      const pluginCfg = fullConfig?.plugins?.entries?.["reef-relay"]?.config
+                      || fullConfig?.plugins?.entries?.["reef"]?.config
                       || {};
 
       const relayUrl = pluginCfg.relayUrl || process.env.REEF_RELAY_URL || "";
@@ -60,41 +59,61 @@ export default function register(api: any) {
     },
   });
 
-  api.registerTool?.(
-    () => ({
-      name: "lobby",
-      description: "🪸 Reef Lobby — chat with other AI agents. Actions: who, say, dm, status",
-      parameters: {
-        type: "object" as const,
-        properties: {
-          action: { type: "string", enum: ["who", "say", "dm", "status"] },
-          to: { type: "string", description: "Target lobsterId (for dm)" },
-          text: { type: "string", description: "Message text" },
-        },
-        required: ["action"],
+  // Register tool using the same pattern as feishu plugins:
+  // factory receives ctx, returns tool object with execute(_toolCallId, params)
+  api.registerTool((ctx: any) => ({
+    name: "lobby",
+    label: "Reef Lobby",
+    description: "🪸 Reef Lobby — chat with other AI agents on the relay. Actions: who (list online), say (broadcast), dm (direct message), status (connection info)",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string", enum: ["who", "say", "dm", "status"], description: "Action to perform" },
+        to: { type: "string", description: "Target lobsterId for dm action" },
+        text: { type: "string", description: "Message text for say/dm actions" },
       },
-      async execute(params: any) {
-        const client = relayClient;
-        if (!client?.isConnected()) return { content: [{ type: "text" as const, text: "🪸 Not connected." }] };
-        switch (params.action) {
-          case "who":
-            client.requestWho();
-            return { content: [{ type: "text" as const, text: `🪸 Online: ${onlineLobsters.map(l => `${l.name} (${l.id})`).join(", ") || "(refreshing...)"}` }] };
-          case "say":
-            if (!params.text?.trim()) return { content: [{ type: "text" as const, text: "🪸 Need text." }] };
-            client.sendLobby(params.text);
-            return { content: [{ type: "text" as const, text: `🪸 [lobby] ${params.text.slice(0, 100)}` }] };
-          case "dm":
-            if (!params.to || !params.text) return { content: [{ type: "text" as const, text: "🪸 Need to + text." }] };
-            client.sendDm(params.to, params.text);
-            return { content: [{ type: "text" as const, text: `🪸 [DM → ${params.to}] ${params.text.slice(0, 100)}` }] };
-          case "status":
-            return { content: [{ type: "text" as const, text: `🪸 Connected: ${client.isConnected()}, Online: ${onlineLobsters.length}` }] };
-          default:
-            return { content: [{ type: "text" as const, text: "🪸 Unknown action." }] };
-        }
-      },
-    }),
-    { optional: true },
-  );
+      required: ["action"],
+    },
+    async execute(_toolCallId: string, params: any) {
+      const client = relayClient;
+      const result = (data: any) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }] });
+
+      if (!client?.isConnected()) {
+        return result({ ok: false, error: "Not connected to reef relay" });
+      }
+
+      switch (params.action) {
+        case "who":
+          client.requestWho();
+          // Give a moment for the response
+          await new Promise(r => setTimeout(r, 500));
+          return result({
+            ok: true,
+            online: (client.onlineLobsters || []).map((l: any) => ({ id: l.id, name: l.name }))
+          });
+
+        case "say":
+          if (!params.text?.trim()) return result({ ok: false, error: "text is required" });
+          client.sendLobby(params.text);
+          return result({ ok: true, action: "lobby_broadcast", text: params.text });
+
+        case "dm":
+          if (!params.to || !params.text) return result({ ok: false, error: "to and text are required" });
+          client.sendDm(params.to, params.text);
+          return result({ ok: true, action: "dm_sent", to: params.to, text: params.text });
+
+        case "status":
+          return result({
+            ok: true,
+            connected: client.isConnected(),
+            online: (client.onlineLobsters || []).map((l: any) => ({ id: l.id, name: l.name }))
+          });
+
+        default:
+          return result({ ok: false, error: `Unknown action: ${params.action}` });
+      }
+    },
+  }), { name: "lobby" });
+
+  log.info("🪸 Reef lobby tool registered");
 }
