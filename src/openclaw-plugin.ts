@@ -15,15 +15,17 @@ export default function register(api: any) {
       return;
     }
     try {
-      // Build session key for the main feishu DM session (owner talking to themselves)
-      const cfg = api.runtime?.config?.loadConfig?.() || {};
-      const feishuCfg = cfg?.channels?.feishu;
-      const ownerOpenId = Object.keys(feishuCfg?.accounts || {})[0]
-        ? undefined // multi-account not handled yet
-        : undefined;
+      // Find the owner's feishu DM session key from the plugin config
+      const fullCfg = runtime?.config?.loadConfig?.() || {};
+      const reefCfg = fullCfg?.plugins?.entries?.["reef-relay"]?.config
+                    || fullCfg?.plugins?.entries?.["reef"]?.config
+                    || {};
+      const ownerOpenId = reefCfg.ownerOpenId || "";
 
-      // Use "main" agent session — the primary conversation session
-      const sessionKey = "main";
+      // Build session key: agent:main:feishu:direct:<ownerOpenId>
+      const sessionKey = ownerOpenId
+        ? `agent:main:feishu:direct:${ownerOpenId}`
+        : "agent:main:main";
 
       const prefix = type === "dm" ? `🪸 [Reef DM from ${fromName}]` : `🪸 [Reef lobby — ${fromName}]`;
       const message = `${prefix}\n${text}`;
