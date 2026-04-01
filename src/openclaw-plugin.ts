@@ -54,48 +54,64 @@ export default function register(api: any) {
     }
   }
 
-  // Helper: call openclaw gateway wake with retry
-  async function wakeAgent(text: string, retries = 2): Promise<boolean> {
+  // Helper: create an isolated cron agentTurn to process a DM.
+  // This spawns a fresh agent session that can use the lobby tool to reply.
+  async function spawnAgentForDm(from: string, fromName: string, text: string, retries = 2): Promise<boolean> {
+    const message = [
+      `🪸 Reef DM received — please handle and reply.`,
+      `From: ${fromName} (lobsterId: ${from})`,
+      `Message: ${text}`,
+      ``,
+      `Action: Read the message, think about an appropriate response, then use the lobby tool with action="dm", to="${from}" to send your reply.`,
+      `Your reply will be automatically mirrored to the Feishu group.`,
+      `Keep it concise and helpful.`,
+    ].join("\n");
+
+    // Use cron one-shot "at" job to spawn an isolated agentTurn
+    const job = {
+      name: `reef-dm-${from}-${Date.now()}`,
+      schedule: { kind: "at", at: new Date(Date.now() + 1000).toISOString() },
+      payload: { kind: "agentTurn", message, timeoutSeconds: 120 },
+      sessionTarget: "isolated",
+      delivery: { mode: "announce" },
+    };
+
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const escapedParams = JSON.stringify({ text, mode: "now" }).replace(/'/g, "'\\''");
+        const escapedParams = JSON.stringify({ action: "add", job }).replace(/'/g, "'\\''");
         const ok = await new Promise<boolean>((resolve) => {
           cpExec(
-            `openclaw gateway call wake --params '${escapedParams}' --timeout 5000`,
-            { timeout: 10000 },
-            (err) => resolve(!err),
+            `openclaw gateway call cron --params '${escapedParams}' --timeout 10000`,
+            { timeout: 15000 },
+            (err, stdout) => {
+              if (err) {
+                log.error(`🪸 Cron add failed: ${err.message}`);
+                resolve(false);
+              } else {
+                log.info(`🪸 Cron job created for DM from ${fromName}: ${stdout.slice(0, 200)}`);
+                resolve(true);
+              }
+            },
           );
         });
-        if (ok) {
-          log.info(`🪸 Wake succeeded (attempt ${attempt + 1})`);
-          return true;
-        }
+        if (ok) return true;
       } catch {}
       if (attempt < retries) await new Promise(r => setTimeout(r, 2000));
     }
-    log.error("🪸 Wake failed after all retries");
+    log.error("🪸 Failed to spawn agent for DM after all retries");
     return false;
   }
 
   // When we receive a DM:
   // 1. Forward to Feishu group for visibility
-  // 2. Wake agent so it processes and replies via lobby dm
+  // 2. Spawn isolated agent to process and reply
   async function handleIncomingDm(from: string, fromName: string, text: string) {
     // Send to Feishu group
     const groupMessage = `🪸 [Reef DM 收到] ${fromName} → ${pluginCfg.name || pluginCfg.lobsterId}:\n${text}`;
     await sendToFeishuGroup(groupMessage);
 
-    // Wake agent with clear instructions
-    const wakeText = [
-      `🪸 Reef DM received — please handle and reply.`,
-      `From: ${fromName} (lobsterId: ${from})`,
-      `Message: ${text}`,
-      ``,
-      `Action: Read the message, decide how to respond, then use the lobby tool with action="dm", to="${from}" to reply.`,
-      `Your reply will be automatically mirrored to the Feishu group.`,
-    ].join("\n");
-
-    await wakeAgent(wakeText);
+    // Spawn agent to handle
+    await spawnAgentForDm(from, fromName, text);
   }
 
   api.registerService?.({
