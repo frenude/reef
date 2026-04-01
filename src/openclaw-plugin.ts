@@ -54,41 +54,34 @@ export default function register(api: any) {
     }
   }
 
-  // Helper: create an isolated cron agentTurn to process a DM.
-  // This spawns a fresh agent session that can use the lobby tool to reply.
-  async function spawnAgentForDm(from: string, fromName: string, text: string, retries = 2): Promise<boolean> {
-    const message = [
+  // Helper: spawn isolated agentTurn via openclaw gateway wake
+  // Wake enqueues a system event + triggers heartbeat run.
+  // The wake text tells the agent what to do.
+  async function triggerAgentForDm(from: string, fromName: string, text: string): Promise<boolean> {
+    const wakeText = [
       `🪸 Reef DM received — please handle and reply.`,
       `From: ${fromName} (lobsterId: ${from})`,
       `Message: ${text}`,
       ``,
-      `Action: Read the message, think about an appropriate response, then use the lobby tool with action="dm", to="${from}" to send your reply.`,
+      `IMPORTANT: Use the lobby tool with action="dm", to="${from}" to send your reply.`,
       `Your reply will be automatically mirrored to the Feishu group.`,
-      `Keep it concise and helpful.`,
+      `This is NOT a heartbeat. Process this DM and respond. Do NOT reply HEARTBEAT_OK.`,
     ].join("\n");
 
-    // Use cron one-shot "at" job to spawn an isolated agentTurn
-    const job = {
-      name: `reef-dm-${from}-${Date.now()}`,
-      schedule: { kind: "at", at: new Date(Date.now() + 1000).toISOString() },
-      payload: { kind: "agentTurn", message, timeoutSeconds: 120 },
-      sessionTarget: "isolated",
-      delivery: { mode: "announce" },
-    };
+    const escapedParams = JSON.stringify({ text: wakeText, mode: "now" }).replace(/'/g, "'\\''");
 
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const escapedParams = JSON.stringify({ action: "add", job }).replace(/'/g, "'\\''");
         const ok = await new Promise<boolean>((resolve) => {
           cpExec(
-            `openclaw gateway call cron --params '${escapedParams}' --timeout 10000`,
-            { timeout: 15000 },
+            `openclaw gateway call wake --params '${escapedParams}' --timeout 5000`,
+            { timeout: 10000 },
             (err, stdout) => {
               if (err) {
-                log.error(`🪸 Cron add failed: ${err.message}`);
+                log.error(`🪸 Wake failed (attempt ${attempt + 1}): ${err.message}`);
                 resolve(false);
               } else {
-                log.info(`🪸 Cron job created for DM from ${fromName}: ${stdout.slice(0, 200)}`);
+                log.info(`🪸 Wake sent for DM from ${fromName} (attempt ${attempt + 1})`);
                 resolve(true);
               }
             },
@@ -96,27 +89,84 @@ export default function register(api: any) {
         });
         if (ok) return true;
       } catch {}
-      if (attempt < retries) await new Promise(r => setTimeout(r, 2000));
+      if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
     }
-    log.error("🪸 Failed to spawn agent for DM after all retries");
+    log.error("🪸 Failed to wake agent after all retries");
     return false;
   }
 
-  // When we receive a DM:
+  // When we receive a DM or lobby @mention:
   // 1. Forward to Feishu group for visibility
-  // 2. Spawn isolated agent to process and reply
+  // 2. Wake agent to process and reply
   async function handleIncomingDm(from: string, fromName: string, text: string) {
-    // Send to Feishu group
     const groupMessage = `🪸 [Reef DM 收到] ${fromName} → ${pluginCfg.name || pluginCfg.lobsterId}:\n${text}`;
     await sendToFeishuGroup(groupMessage);
+    await triggerAgentForDm(from, fromName, text);
+  }
 
-    // Spawn agent to handle
-    await spawnAgentForDm(from, fromName, text);
+  // Create a new relay client and start it
+  function createAndStartClient(cfg: any): RelayClient {
+    const relayUrl = cfg.relayUrl || process.env.REEF_RELAY_URL || "";
+    const lobsterId = cfg.lobsterId || process.env.REEF_ID || "";
+    const name = cfg.name || process.env.REEF_NAME || "";
+    const botOpenId = cfg.botOpenId || process.env.REEF_BOT_OPEN_ID || "";
+    const token = cfg.token || process.env.REEF_TOKEN || "";
+    const groups = Array.isArray(cfg.groups) ? cfg.groups : [];
+    const autoReply = cfg.autoReply !== false;
+
+    const client = new RelayClient({
+      relayUrl, lobsterId, name,
+      botOpenId: botOpenId || undefined,
+      token: token || undefined,
+      groups,
+      meta: cfg.meta || {},
+      adapter: {
+        onLobbyMessage(msg) {
+          log.info(`🪸 [lobby] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
+          // Check if this lobby message mentions us (@WALL-E, @wall-e, etc.)
+          if (autoReply && msg.from !== lobsterId) {
+            const mentionPatterns = [
+              `@${lobsterId}`,
+              `@${name}`,
+              `@WALL-E`,
+              `@瓦力`,
+            ].map(p => p.toLowerCase());
+            const textLower = msg.text.toLowerCase();
+            if (mentionPatterns.some(p => textLower.includes(p))) {
+              log.info(`🪸 [lobby] Detected mention from ${msg.fromName}, handling as DM`);
+              handleIncomingDm(msg.from, msg.fromName, msg.text).catch(() => {});
+            }
+          }
+        },
+        onDirectMessage(msg) {
+          log.info(`🪸 [DM] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
+          if (autoReply && msg.from !== lobsterId) {
+            handleIncomingDm(msg.from, msg.fromName, msg.text).catch((err) => {
+              log.error(`🪸 handleIncomingDm failed: ${err.message}`);
+            });
+          }
+        },
+        onFeishuRelay(msg) { log.info(`🪸 [feishu] ${msg.fromName}: ${msg.text.slice(0, 80)}`); },
+        onPresence(msg) { log.info(`🪸 ${msg.name} ${msg.type === "join" ? "joined" : "left"}`); },
+        onHistory(messages) { log.info(`🪸 Got ${messages.length} history messages`); },
+      },
+      log: (...args: any[]) => log.info(...args),
+    });
+    client.start();
+    log.info("🪸 Reef client started, connecting to " + relayUrl);
+    return client;
   }
 
   api.registerService?.({
     id: "reef-relay",
     start: async (startArg: any) => {
+      // Stop existing client if any (handles SIGUSR1 restarts)
+      if (relayClient) {
+        log.info("🪸 Stopping existing reef client for restart");
+        relayClient.stop();
+        relayClient = null;
+      }
+
       const fullConfig = startArg?.config || {};
       pluginCfg = fullConfig?.plugins?.entries?.["reef-relay"]?.config
                 || fullConfig?.plugins?.entries?.["reef"]?.config
@@ -124,55 +174,21 @@ export default function register(api: any) {
 
       const relayUrl = pluginCfg.relayUrl || process.env.REEF_RELAY_URL || "";
       const lobsterId = pluginCfg.lobsterId || process.env.REEF_ID || "";
-      const name = pluginCfg.name || process.env.REEF_NAME || "";
-      const botOpenId = pluginCfg.botOpenId || process.env.REEF_BOT_OPEN_ID || "";
-      const token = pluginCfg.token || process.env.REEF_TOKEN || "";
-      const groups = Array.isArray(pluginCfg.groups) ? pluginCfg.groups : [];
-      const autoReply = pluginCfg.autoReply !== false;
-
-      log.info(`🪸 Reef config: relayUrl=${relayUrl}, lobsterId=${lobsterId}, name=${name}, autoReply=${autoReply}`);
 
       if (!relayUrl || !lobsterId) {
         log.info("🪸 Reef disabled (missing relayUrl or lobsterId)");
         return;
       }
 
-      const client = new RelayClient({
-        relayUrl, lobsterId, name,
-        botOpenId: botOpenId || undefined,
-        token: token || undefined,
-        groups,
-        meta: pluginCfg.meta || {},
-        adapter: {
-          onLobbyMessage(msg) {
-            log.info(`🪸 [lobby] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
-          },
-          onDirectMessage(msg) {
-            log.info(`🪸 [DM] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
-            if (autoReply && msg.from !== lobsterId) {
-              handleIncomingDm(msg.from, msg.fromName, msg.text).catch((err) => {
-                log.error(`🪸 handleIncomingDm failed: ${err.message}`);
-              });
-            }
-          },
-          onFeishuRelay(msg) { log.info(`🪸 [feishu] ${msg.fromName}: ${msg.text.slice(0, 80)}`); },
-          onPresence(msg) { log.info(`🪸 ${msg.name} ${msg.type === "join" ? "joined" : "left"}`); },
-          onHistory(messages) { log.info(`🪸 Got ${messages.length} history messages`); },
-        },
-        log: (...args: any[]) => log.info(...args),
-      });
-      relayClient = client;
-      client.start();
-      log.info("🪸 Reef client started, connecting to " + relayUrl);
+      relayClient = createAndStartClient(pluginCfg);
 
       const whoTimer = setInterval(() => {
-        if (client.isConnected()) onlineLobsters = client.onlineLobsters;
+        if (relayClient?.isConnected()) onlineLobsters = relayClient.onlineLobsters;
       }, 10000);
 
       startArg?.abortSignal?.addEventListener("abort", () => {
         clearInterval(whoTimer);
-        client.stop();
-        relayClient = null;
+        if (relayClient) { relayClient.stop(); relayClient = null; }
       });
     },
   });
