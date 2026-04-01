@@ -54,37 +54,48 @@ export default function register(api: any) {
     }
   }
 
-  // Helper: when we receive a DM, forward it to the configured Feishu group
-  // AND wake the agent via `openclaw gateway call wake` so it can process and respond.
-  async function injectToAgent(from: string, fromName: string, text: string) {
-    const groupMessage = `🪸 [Reef DM] ${fromName} → ${pluginCfg.name || pluginCfg.lobsterId}:\n${text}`;
+  // Helper: call openclaw gateway wake with retry
+  async function wakeAgent(text: string, retries = 2): Promise<boolean> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const escapedParams = JSON.stringify({ text, mode: "now" }).replace(/'/g, "'\\''");
+        const ok = await new Promise<boolean>((resolve) => {
+          cpExec(
+            `openclaw gateway call wake --params '${escapedParams}' --timeout 5000`,
+            { timeout: 10000 },
+            (err) => resolve(!err),
+          );
+        });
+        if (ok) {
+          log.info(`🪸 Wake succeeded (attempt ${attempt + 1})`);
+          return true;
+        }
+      } catch {}
+      if (attempt < retries) await new Promise(r => setTimeout(r, 2000));
+    }
+    log.error("🪸 Wake failed after all retries");
+    return false;
+  }
 
-    // 1. Send to Feishu group for visibility
+  // When we receive a DM:
+  // 1. Forward to Feishu group for visibility
+  // 2. Wake agent so it processes and replies via lobby dm
+  async function handleIncomingDm(from: string, fromName: string, text: string) {
+    // Send to Feishu group
+    const groupMessage = `🪸 [Reef DM 收到] ${fromName} → ${pluginCfg.name || pluginCfg.lobsterId}:\n${text}`;
     await sendToFeishuGroup(groupMessage);
 
-    // 2. Wake the agent via OpenClaw CLI so it can respond with lobby dm
-    try {
-      const wakeText = `🪸 [Reef DM from ${fromName} (${from})]\n${text}\n\n(用 lobby tool 的 dm action 回复 to="${from}")`;
-      const escapedParams = JSON.stringify({ text: wakeText, mode: "now" }).replace(/'/g, "'\''");
+    // Wake agent with clear instructions
+    const wakeText = [
+      `🪸 Reef DM received — please handle and reply.`,
+      `From: ${fromName} (lobsterId: ${from})`,
+      `Message: ${text}`,
+      ``,
+      `Action: Read the message, decide how to respond, then use the lobby tool with action="dm", to="${from}" to reply.`,
+      `Your reply will be automatically mirrored to the Feishu group.`,
+    ].join("\n");
 
-      await new Promise<void>((resolve, reject) => {
-        cpExec(
-          `openclaw gateway call wake --params '${escapedParams}' --timeout 5000`,
-          { timeout: 10000 },
-          (err, stdout, stderr) => {
-            if (err) {
-              log.error(`🪸 Wake CLI failed: ${err.message}`);
-              reject(err);
-            } else {
-              log.info(`🪸 Woke agent for DM from ${fromName}`);
-              resolve();
-            }
-          }
-        );
-      });
-    } catch (err: any) {
-      log.error(`🪸 Wake failed: ${err.message}`);
-    }
+    await wakeAgent(wakeText);
   }
 
   api.registerService?.({
@@ -122,9 +133,10 @@ export default function register(api: any) {
           },
           onDirectMessage(msg) {
             log.info(`🪸 [DM] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
-            // When we RECEIVE a DM, forward it to our owner's agent session
             if (autoReply && msg.from !== lobsterId) {
-              injectToAgent(msg.from, msg.fromName, msg.text).catch(() => {});
+              handleIncomingDm(msg.from, msg.fromName, msg.text).catch((err) => {
+                log.error(`🪸 handleIncomingDm failed: ${err.message}`);
+              });
             }
           },
           onFeishuRelay(msg) { log.info(`🪸 [feishu] ${msg.fromName}: ${msg.text.slice(0, 80)}`); },
@@ -190,7 +202,6 @@ export default function register(api: any) {
         case "say":
           if (!params.text?.trim()) return result({ ok: false, error: "text is required" });
           client.sendLobby(params.text);
-          // Also mirror to feishu group if configured
           if (deliverGroupId) {
             sendToFeishuGroup(`🪸 ${pluginCfg.name || pluginCfg.lobsterId}: ${params.text}`).catch(() => {});
           }
@@ -199,13 +210,11 @@ export default function register(api: any) {
         case "dm": {
           if (!params.to || !params.text) return result({ ok: false, error: "to and text are required" });
           client.sendDm(params.to, params.text);
-          // Mirror outgoing DM to feishu group — I (sender) post it, @ the recipient
+          // Mirror outgoing DM to feishu group
           if (deliverGroupId) {
             const targetInfo = lobsterMap[params.to];
-            const mention = targetInfo?.openId
-              ? `<at user_id="${targetInfo.openId}">${targetInfo.name || params.to}</at> `
-              : `@${params.to} `;
-            sendToFeishuGroup(`🪸 ${mention}${params.text}`).catch(() => {});
+            const targetName = targetInfo?.name || params.to;
+            sendToFeishuGroup(`🪸 [Reef DM 回复] ${pluginCfg.name || pluginCfg.lobsterId} → ${targetName}:\n${params.text}`).catch(() => {});
           }
           return result({ ok: true, action: "dm_sent", to: params.to, text: params.text });
         }
