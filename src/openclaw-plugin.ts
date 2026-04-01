@@ -117,11 +117,10 @@ export default function register(api: any) {
   }
 
   async function handleIncomingDm(from: string, fromName: string, text: string) {
-    // 1. Send to Feishu group for visibility
-    const groupMessage = `🪸 [Reef DM 收到] ${fromName} → ${_globalCfg.name || _globalCfg.lobsterId}:\n${text}`;
-    await sendToFeishuGroup(groupMessage);
+    // Do NOT send incoming DM to feishu group — agent session will reply via lobby dm,
+    // and the outgoing dm will be mirrored to the group.
 
-    // 2. Spawn a real agent session to process and reply
+    // Spawn a real agent session to process and reply
     log.info(`🪸 Spawning agent session for DM from ${fromName}`);
     const ok = await spawnAgentSession(from, fromName, text);
     if (!ok) {
