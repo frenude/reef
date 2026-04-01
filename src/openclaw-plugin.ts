@@ -186,9 +186,13 @@ export default function register(api: any) {
         if (relayClient?.isConnected()) onlineLobsters = relayClient.onlineLobsters;
       }, 10000);
 
+      // NOTE: Do NOT stop relayClient on abortSignal!
+      // SIGUSR1 restart fires abort but doesn't re-call start(),
+      // so stopping the client here would kill the connection permanently.
+      // The relay client has its own reconnection logic and stays alive.
       startArg?.abortSignal?.addEventListener("abort", () => {
         clearInterval(whoTimer);
-        if (relayClient) { relayClient.stop(); relayClient = null; }
+        // relayClient stays alive intentionally
       });
     },
   });
