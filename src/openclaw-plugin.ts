@@ -1,5 +1,4 @@
 import { RelayClient } from "./relay-client.js";
-import { exec as cpExec } from "node:child_process";
 
 // Module-level client that survives re-registration
 let _globalClient: RelayClient | null = null;
@@ -21,6 +20,10 @@ export default function register(api: any) {
   const lobsterId = _globalCfg.lobsterId || process.env.REEF_ID || "";
   const name = _globalCfg.name || process.env.REEF_NAME || "";
   const autoReply = _globalCfg.autoReply !== false;
+
+  // Get gateway config for HTTP API
+  const gwPort = fullConfig?.gateway?.port || 18789;
+  const gwToken = fullConfig?.gateway?.auth?.token || "";
 
   // Helper: send a message to feishu group via API
   async function sendToFeishuGroup(text: string) {
@@ -66,49 +69,66 @@ export default function register(api: any) {
     }
   }
 
-  // Wake agent to handle DM
-  async function triggerAgentForDm(from: string, fromName: string, text: string): Promise<boolean> {
-    const wakeText = [
-      `🪸 Reef DM received — please handle and reply.`,
-      `From: ${fromName} (lobsterId: ${from})`,
-      `Message: ${text}`,
+  // Spawn a real agent session via Gateway HTTP chat/completions API
+  // This creates a full agent turn with all tools (including lobby)
+  async function spawnAgentSession(from: string, fromName: string, text: string): Promise<boolean> {
+    const prompt = [
+      `🪸 Reef DM received from ${fromName} (lobsterId: ${from}).`,
       ``,
-      `IMPORTANT: Use the lobby tool with action="dm", to="${from}" to send your reply.`,
-      `Your reply will be automatically mirrored to the Feishu group.`,
-      `This is NOT a heartbeat. Process this DM and respond. Do NOT reply HEARTBEAT_OK.`,
+      `Their message:`,
+      `${text}`,
+      ``,
+      `Instructions:`,
+      `1. Read and understand the message.`,
+      `2. Think about an appropriate response.`,
+      `3. Use the lobby tool with action="dm", to="${from}" to send your reply.`,
+      `4. Keep your reply concise, helpful, and in character.`,
+      `5. If they asked you to do something (review PR, check data, etc.), do it and report back.`,
     ].join("\n");
 
-    const escapedParams = JSON.stringify({ text: wakeText, mode: "now" }).replace(/'/g, "'\\''");
+    try {
+      const res = await fetch(`http://localhost:${gwPort}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${gwToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "openclaw",
+          messages: [{ role: "user", content: prompt }],
+          stream: false,
+        }),
+      });
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const ok = await new Promise<boolean>((resolve) => {
-          cpExec(
-            `openclaw gateway call wake --params '${escapedParams}' --timeout 5000`,
-            { timeout: 10000 },
-            (err) => {
-              if (err) {
-                log.error(`🪸 Wake failed (attempt ${attempt + 1}): ${err.message}`);
-                resolve(false);
-              } else {
-                log.info(`🪸 Wake sent for DM from ${fromName} (attempt ${attempt + 1})`);
-                resolve(true);
-              }
-            },
-          );
-        });
-        if (ok) return true;
-      } catch {}
-      if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+      if (!res.ok) {
+        const errText = await res.text();
+        log.error(`🪸 Agent session failed (${res.status}): ${errText.slice(0, 200)}`);
+        return false;
+      }
+
+      const data = await res.json() as any;
+      const reply = data?.choices?.[0]?.message?.content || "";
+      log.info(`🪸 Agent session completed. Reply preview: ${reply.slice(0, 100)}`);
+      return true;
+    } catch (err: any) {
+      log.error(`🪸 Agent session error: ${err.message}`);
+      return false;
     }
-    log.error("🪸 Failed to wake agent after all retries");
-    return false;
   }
 
   async function handleIncomingDm(from: string, fromName: string, text: string) {
+    // 1. Send to Feishu group for visibility
     const groupMessage = `🪸 [Reef DM 收到] ${fromName} → ${_globalCfg.name || _globalCfg.lobsterId}:\n${text}`;
     await sendToFeishuGroup(groupMessage);
-    await triggerAgentForDm(from, fromName, text);
+
+    // 2. Spawn a real agent session to process and reply
+    log.info(`🪸 Spawning agent session for DM from ${fromName}`);
+    const ok = await spawnAgentSession(from, fromName, text);
+    if (!ok) {
+      log.error(`🪸 Agent session failed for DM from ${fromName}`);
+      // Notify feishu group about failure
+      await sendToFeishuGroup(`🪸 ⚠️ Agent 处理 ${fromName} 的 DM 失败`);
+    }
   }
 
   // Start relay client (only if not already connected)
@@ -116,7 +136,6 @@ export default function register(api: any) {
     if (_globalClient?.isConnected()) {
       log.info("🪸 Reef client already connected, reusing");
     } else {
-      // Stop old client if exists
       if (_globalClient) {
         log.info("🪸 Stopping old reef client");
         _globalClient.stop();
@@ -133,7 +152,6 @@ export default function register(api: any) {
         adapter: {
           onLobbyMessage(msg) {
             log.info(`🪸 [lobby] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
-            // Check if this lobby message mentions us
             if (autoReply && msg.from !== lobsterId) {
               const mentionPatterns = [
                 `@${lobsterId}`, `@${name}`, `@wall-e`, `@瓦力`,
@@ -167,7 +185,7 @@ export default function register(api: any) {
     log.info("🪸 Reef disabled (missing relayUrl or lobsterId)");
   }
 
-  // Register tool (this can be called multiple times safely)
+  // Register tool
   api.registerTool((_ctx: any) => ({
     name: "lobby",
     label: "Reef Lobby",
@@ -199,10 +217,7 @@ export default function register(api: any) {
           return result({
             ok: true,
             online: (client.onlineLobsters || []).map((l: any) => ({
-              id: l.id,
-              name: l.name,
-              meta: l.meta || {},
-              connectedAt: l.connectedAt,
+              id: l.id, name: l.name, meta: l.meta || {}, connectedAt: l.connectedAt,
             }))
           });
 
