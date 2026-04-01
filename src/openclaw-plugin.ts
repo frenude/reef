@@ -231,10 +231,15 @@ export default function register(api: any) {
         case "dm": {
           if (!params.to || !params.text) return result({ ok: false, error: "to and text are required" });
           client.sendDm(params.to, params.text);
+          // Mirror outgoing DM to feishu group, @ the target's feishu bot
           if (deliverGroupId) {
             const targetInfo = lobsterMap[params.to];
+            const targetOpenId = targetInfo?.openId;
             const targetName = targetInfo?.name || params.to;
-            sendToFeishuGroup(`🪸 [Reef DM 回复] ${_globalCfg.name || _globalCfg.lobsterId} → ${targetName}:\n${params.text}`).catch(() => {});
+            const atTarget = targetOpenId
+              ? `<at user_id="${targetOpenId}">${targetName}</at>`
+              : `@${params.to}`;
+            sendToFeishuGroup(`🪸 ${atTarget} ${params.text}`).catch(() => {});
           }
           return result({ ok: true, action: "dm_sent", to: params.to, text: params.text });
         }
