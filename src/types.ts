@@ -50,6 +50,7 @@ export interface LobsterInfo {
   botOpenId?: string;
   groups: string[];
   connectedAt: number;
+  meta?: Record<string, unknown>;
 }
 
 // --- Adapter Interface ---

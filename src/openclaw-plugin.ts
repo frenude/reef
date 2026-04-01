@@ -1,4 +1,5 @@
 import { RelayClient } from "./relay-client.js";
+import { exec as cpExec } from "node:child_process";
 
 export default function register(api: any) {
   const log = api.logger || { info: console.log, warn: console.warn, error: console.error };
@@ -53,34 +54,36 @@ export default function register(api: any) {
     }
   }
 
-  // Helper: inject DM into agent session so agent can respond
+  // Helper: when we receive a DM, forward it to the configured Feishu group
+  // AND wake the agent via `openclaw gateway call wake` so it can process and respond.
   async function injectToAgent(from: string, fromName: string, text: string) {
-    if (!runtime?.subagent?.run) {
-      log.warn("🪸 Cannot inject: no runtime.subagent.run");
-      return;
-    }
+    const groupMessage = `🪸 [Reef DM] ${fromName} → ${pluginCfg.name || pluginCfg.lobsterId}:\n${text}`;
+
+    // 1. Send to Feishu group for visibility
+    await sendToFeishuGroup(groupMessage);
+
+    // 2. Wake the agent via OpenClaw CLI so it can respond with lobby dm
     try {
-      const fullCfg = runtime?.config?.loadConfig?.() || {};
-      const reefCfg = fullCfg?.plugins?.entries?.["reef-relay"]?.config
-                    || fullCfg?.plugins?.entries?.["reef"]?.config
-                    || {};
-      const ownerOpenId = reefCfg.ownerOpenId || "";
-      // Inject into owner's DM session so the agent wakes up and can use lobby tool to reply
-      const sessionKey = ownerOpenId
-        ? `agent:main:feishu:direct:${ownerOpenId}`
-        : "agent:main:main";
+      const wakeText = `🪸 [Reef DM from ${fromName} (${from})]\n${text}\n\n(用 lobby tool 的 dm action 回复 to="${from}")`;
+      const escapedParams = JSON.stringify({ text: wakeText, mode: "now" }).replace(/'/g, "'\''");
 
-      const message = `🪸 [Reef DM from ${fromName}]\n${text}\n\n(用 lobby tool 的 dm action 回复 ${from})`;
-
-      const { runId } = await runtime.subagent.run({
-        sessionKey,
-        message,
-        deliver: true,
-        idempotencyKey: `reef-${from}-${Date.now()}`,
+      await new Promise<void>((resolve, reject) => {
+        cpExec(
+          `openclaw gateway call wake --params '${escapedParams}' --timeout 5000`,
+          { timeout: 10000 },
+          (err, stdout, stderr) => {
+            if (err) {
+              log.error(`🪸 Wake CLI failed: ${err.message}`);
+              reject(err);
+            } else {
+              log.info(`🪸 Woke agent for DM from ${fromName}`);
+              resolve();
+            }
+          }
+        );
       });
-      log.info(`🪸 Injected DM from ${fromName} → ${sessionKey}, runId=${runId}`);
     } catch (err: any) {
-      log.error(`🪸 Inject failed: ${err.message}`);
+      log.error(`🪸 Wake failed: ${err.message}`);
     }
   }
 
@@ -112,6 +115,7 @@ export default function register(api: any) {
         botOpenId: botOpenId || undefined,
         token: token || undefined,
         groups,
+        meta: pluginCfg.meta || {},
         adapter: {
           onLobbyMessage(msg) {
             log.info(`🪸 [lobby] ${msg.fromName}: ${msg.text.slice(0, 100)}`);
@@ -175,7 +179,12 @@ export default function register(api: any) {
           await new Promise(r => setTimeout(r, 500));
           return result({
             ok: true,
-            online: (client.onlineLobsters || []).map((l: any) => ({ id: l.id, name: l.name }))
+            online: (client.onlineLobsters || []).map((l: any) => ({
+              id: l.id,
+              name: l.name,
+              meta: l.meta || {},
+              connectedAt: l.connectedAt,
+            }))
           });
 
         case "say":
@@ -205,7 +214,11 @@ export default function register(api: any) {
           return result({
             ok: true,
             connected: client.isConnected(),
-            online: (client.onlineLobsters || []).map((l: any) => ({ id: l.id, name: l.name }))
+            online: (client.onlineLobsters || []).map((l: any) => ({
+              id: l.id,
+              name: l.name,
+              meta: l.meta || {},
+            }))
           });
 
         default:
